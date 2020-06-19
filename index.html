@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<head>
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<title>Happy Birthday!</title>
+	<!-- include three.js library -->
+	<script src='js/three.js'></script>
+	<script src='js/OBJLoader.js'></script>
+	<script src='js/MTLLoader.js'></script>
+
+	<!-- include jsartookit -->
+	<script src="jsartoolkit5/artoolkit.min.js"></script>
+	<script src="jsartoolkit5/artoolkit.api.js"></script>
+	<!-- include threex.artoolkit -->
+	<script src="threex/threex-artoolkitsource.js"></script>
+	<script src="threex/threex-artoolkitcontext.js"></script>
+	<script src="threex/threex-arbasecontrols.js"></script>
+	<script src="threex/threex-armarkercontrols.js"></script>
+</head>
+
+<body style='margin : 0px; overflow: hidden; font-family: Monospace;'>
+
+<!-- 
+  Example created by Lee Stemkoski: https://github.com/stemkoski
+  Based on the AR.js library and examples created by Jerome Etienne: https://github.com/jeromeetienne/AR.js/
+-->
+
+<script>
+function getFlameMaterial(isFrontSide){
+  let side = isFrontSide ? THREE.FrontSide : THREE.BackSide;
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      time: {value: 0}
+    },
+    vertexShader: `
+            uniform float time;
+            varying vec2 vUv;
+            varying float hValue;
+
+            //https://thebookofshaders.com/11/
+            // 2D Random
+            float random (in vec2 st) {
+                return fract(sin(dot(st.xy,
+                                     vec2(12.9898,78.233)))
+                             * 43758.5453123);
+            }
+
+            // 2D Noise based on Morgan McGuire @morgan3d
+            // https://www.shadertoy.com/view/4dS3Wd
+            float noise (in vec2 st) {
+                vec2 i = floor(st);
+                vec2 f = fract(st);
+
+                // Four corners in 2D of a tile
+                float a = random(i);
+                float b = random(i + vec2(1.0, 0.0));
+                float c = random(i + vec2(0.0, 1.0));
+                float d = random(i + vec2(1.0, 1.0));
+
+                // Smooth Interpolation
+
+                // Cubic Hermine Curve.  Same as SmoothStep()
+                vec2 u = f*f*(3.0-2.0*f);
+                // u = smoothstep(0.,1.,f);
+
+                // Mix 4 coorners percentages
+                return mix(a, b, u.x) +
+                        (c - a)* u.y * (1.0 - u.x) +
+                        (d - b) * u.x * u.y;
+            }
+
+            void main() {
+              vUv = uv;
+              vec3 pos = position;
+
+              pos *= vec3(0.8, 2, 0.725);
+              hValue = position.y;
+              //float sinT = sin(time * 2.) * 0.5 + 0.5;
+              float posXZlen = length(position.xz);
+
+              pos.y *= 1. + (cos((posXZlen + 0.25) * 3.1415926) * 0.25 + noise(vec2(0, time)) * 0.125 + noise(vec2(position.x + time, position.z + time)) * 0.5) * position.y * 0.1; // flame height
+
+              pos.x += noise(vec2(time * 2., (position.y - time) * 4.0)) * hValue * 0.0312; // flame trembling
+              pos.z += noise(vec2((position.y - time) * 4.0, time * 2.)) * hValue * 0.0312; // flame trembling
+
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(pos,1.0);
+            }
+          `,
+    fragmentShader: `
+            varying float hValue;
+            varying vec2 vUv;
+
+            // honestly stolen from https://www.shadertoy.com/view/4dsSzr
+            vec3 heatmapGradient(float t) {
+              return clamp((pow(t, 1.5) * 0.8 + 0.2) * vec3(smoothstep(0.0, 0.35, t) + t * 0.5, smoothstep(0.5, 1.0, t), max(1.0 - t * 1.7, t * 7.0 - 6.0)), 0.0, 1.0);
+            }
+
+            void main() {
+              float v = abs(smoothstep(0.0, 0.4, hValue) - 1.);
+              float alpha = (1. - v) * 0.99; // bottom transparency
+              alpha -= 1. - smoothstep(1.0, 0.97, hValue); // tip transparency
+              gl_FragColor = vec4(heatmapGradient(smoothstep(0.0, 0.3, hValue)) * vec3(0.95,0.95,0.4), alpha) ;
+              gl_FragColor.rgb = mix(vec3(0,0,1), gl_FragColor.rgb, smoothstep(0.0, 0.3, hValue)); // blueish for bottom
+              gl_FragColor.rgb += vec3(1, 0.9, 0.5) * (1.25 - vUv.y); // make the midst brighter
+              gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.66, 0.32, 0.03), smoothstep(0.95, 1., hValue)); // tip
+            }
+          `,
+    transparent: true,
+    side: side
+  });
+}
+
+    </script>
+<script>
+// TODO
+var allFlameMaterials = [];
+var flames = [];
+var initialAngle = 2;
+var r = 0.547;
+var mesh0;
+
+var scene, camera, renderer, clock, deltaTime, totalTime;
+
+var arToolkitSource, arToolkitContext;
+
+var markerRoot1;
+
+var mesh1;
+
+initialize();
+animate();
+
+function initialize()
+{
+	scene = new THREE.Scene();
+
+	<!-- let ambientLight = new THREE.AmbientLight( 0xcccccc, 1.0 ); -->
+	<!-- scene.add( ambientLight ); -->
+
+  //Create the lights
+  var ambientLight = new THREE.AmbientLight(0xFFFFFF, .5);
+  scene.add(ambientLight);
+
+  var lights = [];
+  lights[0] = new THREE.DirectionalLight( 0xffffff, 0.5);
+  lights[0].position.set(1, 0, 0);
+  lights[1] = new THREE.DirectionalLight( 0x11E8BB, 0.5);
+  lights[1].position.set(0.75, 1, 0.5);
+  lights[2] = new THREE.DirectionalLight( 0x8200C9, 0.5);
+  lights[2].position.set(-0.75, -1, 0.5);
+  scene.add(lights[0]);
+  scene.add(lights[1]);
+  scene.add(lights[2]);
+				
+	camera = new THREE.Camera();
+	scene.add(camera);
+
+	renderer = new THREE.WebGLRenderer({
+		antialias : true,
+		alpha: true
+	});
+	renderer.setClearColor(0x000000, 0)
+	renderer.setSize( 1920, 1080 );
+	renderer.domElement.style.position = 'absolute'
+	renderer.domElement.style.top = '0px'
+	renderer.domElement.style.left = '0px'
+        renderer.autoClear=true;
+	document.body.appendChild( renderer.domElement );
+
+	clock = new THREE.Clock();
+	deltaTime = 0;
+	totalTime = 0;
+	
+	////////////////////////////////////////////////////////////
+	// setup arToolkitSource
+	////////////////////////////////////////////////////////////
+
+	arToolkitSource = new THREEx.ArToolkitSource({
+		sourceType : 'webcam',
+	});
+
+	function onResize()
+	{
+		arToolkitSource.onResize()	
+		arToolkitSource.copySizeTo(renderer.domElement)	
+		if ( arToolkitContext.arController !== null )
+		{
+			arToolkitSource.copySizeTo(arToolkitContext.arController.canvas)	
+		}	
+	}
+
+	arToolkitSource.init(function onReady(){
+		onResize()
+	});
+	
+	// handle resize event
+	window.addEventListener('resize', function(){
+		onResize()
+	});
+	
+	////////////////////////////////////////////////////////////
+	// setup arToolkitContext
+	////////////////////////////////////////////////////////////	
+
+	// create atToolkitContext
+	arToolkitContext = new THREEx.ArToolkitContext({
+		cameraParametersUrl: 'data/camera_para.dat',
+		detectionMode: 'mono'
+	});
+	
+	// copy projection matrix to camera when initialization complete
+	arToolkitContext.init( function onCompleted(){
+		camera.projectionMatrix.copy( arToolkitContext.getProjectionMatrix() );
+	});
+
+	////////////////////////////////////////////////////////////
+	// setup markerRoots
+	////////////////////////////////////////////////////////////
+
+	// build markerControls
+	markerRoot1 = new THREE.Group();
+	scene.add(markerRoot1);
+	let markerControls1 = new THREEx.ArMarkerControls(arToolkitContext, markerRoot1, {
+		type: 'pattern', patternUrl: "data/hb.patt",
+	})
+
+	let geometry1 = new THREE.PlaneBufferGeometry(1,1, 4,4);
+	let loader = new THREE.TextureLoader();
+	// let texture = loader.load( 'images/earth.jpg', render );
+	let material1 = new THREE.MeshBasicMaterial( { color: 0x0000ff, opacity: 0.5 } );
+	mesh1 = new THREE.Mesh( geometry1, material1 );
+	mesh1.rotation.x = -Math.PI/2;
+	markerRoot1.add( mesh1 );
+	
+	function onProgress(xhr) { console.log( (xhr.loaded / xhr.total * 100) + '% loaded' ); }
+	function onError(xhr) { console.log( 'An error happened' ); }
+	
+	new THREE.MTLLoader()
+		.setPath( 'models/' )
+		.load( 'Birthday_Cake.mtl', function ( materials ) {
+			materials.preload();
+			new THREE.OBJLoader()
+				.setMaterials( materials )
+				.setPath( 'models/' )
+				.load( 'Birthday_Cake.obj', function ( group ) {
+					// mesh0 = group.children[0];
+					// mesh0.material.side = THREE.DoubleSide;
+                                        mesh0 = new THREE.Object3D();
+                                        mesh0.add(group);
+					mesh0.position.x = -0.01;
+					mesh0.position.y = 0;
+					mesh0.position.z = -0.01;
+                                        mesh0.rotation.set(-1.5708, 0, 0)
+					mesh0.scale.set(0.05,0.05,0.05);
+					markerRoot1.add(mesh0);
+                                        placeFlames(); // insert flames
+				}, onProgress, onError );
+		});
+}
+
+// Generate flame
+function flame(isFrontSide, x, z){
+  // This function creates one flame and places it on given x, z place
+
+  var caseMesh = new THREE.Mesh(); // create empty mesh.
+  var flameGeo = new THREE.SphereBufferGeometry(0.025, 32, 32); // initial flame geometry. Initially it's sphere. 
+  var flameMaterials = [];
+  // CAUTION: the following codes are just provided from 3rd party. 
+  // Please don't udpate following codes.
+  flameGeo.translate(0, 0.5, 0);
+  var flameMat = getFlameMaterial(isFrontSide);
+  flameMaterials.push(flameMat);
+  var flame = new THREE.Mesh(flameGeo, flameMat);
+  flame.position.set(x, 0.17, z);
+  flame.rotation.y = THREE.Math.degToRad(-45);
+
+  flames.push(flame);
+  allFlameMaterials.push(flameMaterials);
+
+  caseMesh.add(flame);
+
+  // add created flame to markerRoot1 group. 
+  markerRoot1.add(caseMesh);
+}
+
+// Add Flames per each candle
+function placeFlames() {
+  // Calculate each position of candle tip and place flames for them.
+
+  for(var i = 0; i < 16; i ++) {
+    a = THREE.Math.degToRad(360 / 16 * i + initialAngle) + mesh0.rotation.z;
+    x = r * Math.cos(a);
+    z = r * Math.sin(a);
+    flame(true, x, z);
+  }
+}
+
+function update()
+{
+	// update artoolkit on every frame
+	if ( arToolkitSource.ready !== false )
+		arToolkitContext.update( arToolkitSource.domElement );
+}
+
+
+function render()
+{
+	renderer.render( scene, camera );
+}
+
+
+function animate()
+{
+	requestAnimationFrame(animate);
+        markerRoot1.rotation.y -= 0.002
+	deltaTime = clock.getDelta();
+	totalTime += deltaTime;
+        if(allFlameMaterials.length > 0) {
+          allFlameMaterials.map(function(flameMaterial, i) {
+            flameMaterial[0].uniforms.time.value = totalTime + i;
+          })
+        }
+	update();
+	render();
+}
+
+</script>
+
+</body>
+</html>
